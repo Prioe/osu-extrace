@@ -2,39 +2,62 @@ const parseArgs = require('minimist');
 const fs = require('fs-extra');
 const path = require('path');
 const spawnSync = require('child_process').spawnSync;
+const winston = require('winston');
+const moment = require('moment');
 const args = parseArgs(process.argv.splice(2), {
   '--': true,
-  string: ['output', 'cache'],
-  boolean: ['help'],
+  string: ['output', 'cache','overwrite'],
+  boolean: ['help', 'verbose', 'debug', 'dry'],
   alias: {
     output: 'o',
     cache: 'c',
-    help: 'h'
+    help: 'h',
+    verbose: 'v',
+    overwrite: 'O',
+    dry: 'd'
   }
 });
+
+const logger = new (winston.Logger)({
+  transports: [
+    new (winston.transports.Console)({
+      level: 'info',
+      colorize: true,
+      timestamp: () => {
+        return `[${moment().format('HH:mm')}]`;
+      }
+    })
+  ]
+});
+if (args.debug && args.verbose) {
+  logger.error(`Please use either '--debug' or '--verbose', not both!`);
+  return;
+}
+logger.transports.console.level = args.debug ? 'debug' : args.verbose ? 'verbose' : 'info';
 
 const DEFAULT_CACHE = path.join(__dirname, 'cache');
 const DEFAULT_OUTPUT_DIR = path.join(__dirname, 'output');
 const CACHE = args.cache ? args.cache : DEFAULT_CACHE;
 const OUTPUT_DIR = args.output ? args.output : DEFAULT_OUTPUT_DIR;
+args.path = args['--'].join(' ');
 
-fs.ensureDirSync(CACHE);
-fs.ensureDirSync(OUTPUT_DIR);
-
-if (args.help) {
+if (args.help || !args.path) {
+  logger.log('debug', `Printing usage... (help: ${args.help}, path: ${!args.path})`);
   usage();
   return;
 }
+logger.log('debug', JSON.stringify(args));
 
-args.path = args['--'].join(' ');
+fs.ensureDirSync(CACHE);
+fs.ensureDirSync(OUTPUT_DIR);
+fs.ensureDirSync(args.path);
 
-console.log(
-`Running osu-extract:
-  Input Directory:  ${args.path}
-  Output Directory: ${OUTPUT_DIR}
-  Cache Directory:  ${CACHE}`
-);
+logger.info(`Running osu-extract...`);
+logger.log('verbose', `Input Directory:  ${args.path}`);
+logger.log('verbose', `Output Directory: ${OUTPUT_DIR}`);
+logger.log('verbose', `Cache Directory:  ${CACHE}`);
 
+var oldConvId = Math.pow(2, 30);
 var addedPaths = [];
 var musicData = {};
 var currentNum;
@@ -57,14 +80,14 @@ fs.walk(args.path)
         if (thumbmatch) {
           o.thumbnail = path.join(path.dirname(item.path), thumbmatch[0].match(/^\d+,\d+,?\d?,"(.*)"((,\d+,\d+)|$)/)[1]);
         } else {
-          console.log('no thumbnail: ' + item.path);
+          logger.log('debug', 'No thumbnail: ' + item.path);
         }
 
         delete o.audiofilename;
         var split = o.path.split(path.sep);
         var match = split[split.length - 2].match(/(\d+)\s*.*/);
         if (!match) {
-          console.log('old naming convention: ' + o.path);
+          musicData[oldConvId++] = o;
         } else {
           musicData[match[1]] = o;
         }
@@ -79,38 +102,44 @@ fs.walk(args.path)
       var song = musicData[song_id];
       var title = path.join(OUTPUT_DIR, `${song.artist.replace(/\*|\?|\\|<|>|:|\"|\||\//g)} - ${song.title.replace(/\*|\?|\\|<|>|:|\"|\||\//g)}.mp3`);
       try {
+        if (args.overwrite)
+          throw new Error();
         fs.lstatSync(title);
         currentNum++;
-        console.log(`[${currentNum}/${maxNum}] file ${title} already exists. Skipping ...`);
+        logger.log('debug', `[${currentNum}/${maxNum}] File ${title} already exists. Skipping ...`);
       } catch (e) {
         currentNum++;
-        var convert = spawnSync('convert', [
-          '-define', 'jpeg:size=400x400', song.thumbnail,
-          '-thumbnail', '400x400^',
-          '-gravity', 'center',
-          '-extent', '400x400',
-          '+profile', '"*"',
-          path.join(CACHE, song_id + '.jpg')
-        ]);
-        console.log(`[${currentNum}/${maxNum}] Converted thumbnail ${song_id}.jpg.`);
-
-        console.log(`[${currentNum}/${maxNum}] Embedding metadata: ${title}`);
-        var ffmpeg = spawnSync('ffmpeg', [
-          '-i', song.path,
-          '-i', path.join(CACHE, song_id + '.jpg'),
-          '-map', '0:0',
-          '-map', '1:0',
-          '-c', 'copy',
-          '-id3v2_version', '3',
-          '-metadata:s:v', 'title="Album Cover"',
-          '-metadata:s:v', 'comment="Cover (Front)"',
-          '-metadata', 'artist=' + song.artist,
-          '-metadata', 'title=' + song.title,
-          '-metadata', 'album=osu!',
-          title,
-        ]);
-        console.log(`[${currentNum}/${maxNum}] Embedded metadata: ${song.artist} - ${song.title}`);
-        fs.removeSync(path.join(CACHE, song_id + '.jpg'));
+        if (!args.dry) {
+          var convert = spawnSync('convert', [
+            '-define', 'jpeg:size=400x400', song.thumbnail,
+            '-thumbnail', '400x400^',
+            '-gravity', 'center',
+            '-extent', '400x400',
+            '+profile', '"*"',
+            path.join(CACHE, song_id + '.jpg')
+          ]);
+        }
+        logger.log('debug', `[${currentNum}/${maxNum}] Converted thumbnail ${song_id}.jpg.`);
+        logger.log('debug', `[${currentNum}/${maxNum}] Embedding metadata: ${title}`);
+        if (!args.dry) {
+          var ffmpeg = spawnSync('ffmpeg', [
+            '-i', song.path,
+            '-i', path.join(CACHE, song_id + '.jpg'),
+            '-map', '0:0',
+            '-map', '1:0',
+            '-c', 'copy',
+            '-id3v2_version', '3',
+            '-metadata:s:v', 'title="Album Cover"',
+            '-metadata:s:v', 'comment="Cover (Front)"',
+            '-metadata', 'artist=' + song.artist,
+            '-metadata', 'title=' + song.title,
+            '-metadata', 'album=osu!',
+            title,
+          ]);
+        }
+        logger.log('verbose', `[${currentNum}/${maxNum}] Embedded metadata: ${song.artist} - ${song.title}`);
+        if (!args.dry)
+          fs.removeSync(path.join(CACHE, song_id + '.jpg'));
       }
     }
   });
@@ -128,6 +157,14 @@ Options:
   -c, --cache <path>
     Set the path where the thumbnails will be cached.
     They get removed after the merge of the metadata.
-    [default: ${DEFAULT_CACHE}]`;
+    [default: ${DEFAULT_CACHE}]
+  -d, --dry
+    Perform a dry run, nothing will be written to the disk.
+  -o, --overwrite
+    Overwrite existing files.
+  -v, --verbose
+    Pretty verbose console output.
+  --debug
+    Really verbose console output.`;
   console.log(usage);
 }

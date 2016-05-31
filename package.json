@@ -19,6 +19,8 @@
   "homepage": "https://github.com/Prioe/osu-extract#readme",
   "dependencies": {
     "fs-extra": "^0.30.0",
-    "minimist": "^1.2.0"
+    "minimist": "^1.2.0",
+    "moment": "^2.13.0",
+    "winston": "^2.2.0"
   }
 }
