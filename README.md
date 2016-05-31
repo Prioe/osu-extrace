@@ -18,4 +18,4 @@ Options:
 -v, --verbose
   Pretty verbose console output.
 --debug
-  Really verbose console output.```
+  Really verbose console output.
